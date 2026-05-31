@@ -1,19 +1,22 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-    QComboBox, QDateEdit, QPushButton, QTableView, QHeaderView,
+    QComboBox, QDateEdit, QPushButton, QHeaderView,
     QMessageBox, QDialog,
 )
 from PyQt5.QtCore import QDate
 import database as db
 from models import ScheduleTableModel
 from ui.dialogs import ScheduleDialog, ActualDialog
+from ui.zoom_mixin import ZoomMixin, ZoomableTableView
 
 
-class ScheduleTab(QWidget):
+class ScheduleTab(QWidget, ZoomMixin):
     def __init__(self):
         super().__init__()
+        self._init_zoom("zoom_schedule")
         self._setup_ui()
         self.refresh()
+        self._apply_zoom()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -42,20 +45,22 @@ class ScheduleTab(QWidget):
         search_btn = QPushButton("検索")
         search_btn.clicked.connect(self.refresh)
         fl.addWidget(search_btn)
+        self._make_zoom_controls(fl)
         fl.addStretch()
         layout.addWidget(group)
 
         # ── table ────────────────────────────────────────────────────────────
         self.model = ScheduleTableModel()
-        self.table = QTableView()
+        self.table = ZoomableTableView()
         self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QTableView.SelectRows)
-        self.table.setSelectionMode(QTableView.SingleSelection)
+        self.table.setSelectionBehavior(ZoomableTableView.SelectRows)
+        self.table.setSelectionMode(ZoomableTableView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setColumnHidden(0, True)
         self.table.setSortingEnabled(False)
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
+        self._register_zoom_table(self.table)
 
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
@@ -143,3 +148,10 @@ class ScheduleTab(QWidget):
             d = dlg.get_data()
             db.add_actual(schedule_id=row["id"], **d)
             QMessageBox.information(self, "登録完了", "実績を登録しました")
+
+    # ── zoom ─────────────────────────────────────────────────────────────────
+
+    def _apply_zoom(self) -> None:
+        self.table.setFont(self._zoom_font())
+        self.table.resizeRowsToContents()
+        self._update_zoom_label()

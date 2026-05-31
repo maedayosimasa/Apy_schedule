@@ -1,5 +1,5 @@
 """build.bat から呼ばれる：Windows ファイルプロパティ用 version info を生成する。"""
-from version import APP_VERSION, APP_NAME
+from version import APP_VERSION, APP_NAME, APP_AUTHOR
 
 parts = APP_VERSION.split('.')
 major = int(parts[0])
@@ -22,7 +22,9 @@ VSVersionInfo(
         StringStruct(u'InternalName',    u'{APP_NAME}'),
         StringStruct(u'OriginalFilename',u'{APP_NAME}.exe'),
         StringStruct(u'ProductName',     u'{APP_NAME}'),
-        StringStruct(u'ProductVersion',  u'{APP_VERSION}')])
+        StringStruct(u'ProductVersion',  u'{APP_VERSION}'),
+        StringStruct(u'LegalCopyright',  u'{APP_AUTHOR}'),
+        StringStruct(u'CompanyName',     u'{APP_AUTHOR}')])
     ]),
     VarFileInfo([VarStruct(u'Translation',[0x0411,1200])])
   ]

@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QMenu, QDialog, QMessageBox, QHeaderView,
     QFormLayout, QDialogButtonBox, QStyledItemDelegate, QLineEdit,
     QTextEdit, QGroupBox, QSizePolicy, QColorDialog, QSpinBox,
-    QFrame,
+    QFrame, QApplication,
 )
 from PyQt5.QtCore import (
     Qt, QDate, QSize, QPoint, QRect, QTimer, QEvent,
@@ -34,6 +34,7 @@ import database as db
 from holidays import get_holiday
 from ui.dialogs import GanttScheduleDialog, ActualDialog, \
     _make_editable_task_combo, resolve_task_combo
+from ui.zoom_mixin import ZoomMixin, ZoomableTableWidget
 
 _WEEKDAY = ['月', '火', '水', '木', '金', '土', '日']
 
@@ -270,6 +271,11 @@ class _GanttDelegate(QStyledItemDelegate):
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
         painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
 
+        # ── 担当者境界ライン ──────────────────────────────────────────────────
+        if data.get('worker_boundary'):
+            painter.setPen(QPen(QColor('#455A64'), 2))
+            painter.drawLine(rect.left(), rect.top(), rect.right(), rect.top())
+
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -357,6 +363,25 @@ class _GanttDelegate(QStyledItemDelegate):
             self._tab.actuals_changed.emit()
 
 
+# ─── fixed-table delegate (worker boundary lines) ────────────────────────────
+
+class _WorkerBoundaryDelegate(QStyledItemDelegate):
+    """固定列テーブル用：担当者グループの先頭行の上端に太い境界線を描画する。"""
+
+    def __init__(self, tab=None):
+        super().__init__(tab)
+        self._tab = tab
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        if self._tab and index.row() in self._tab._worker_boundary_rows:
+            painter.save()
+            painter.setPen(QPen(QColor('#455A64'), 2))
+            r = option.rect
+            painter.drawLine(r.left(), r.top(), r.right(), r.top())
+            painter.restore()
+
+
 # ─── drop indicator overlay ───────────────────────────────────────────────────
 
 class _DropLineWidget(QWidget):
@@ -388,25 +413,33 @@ class _DropLineWidget(QWidget):
 
 # ─── main tab ─────────────────────────────────────────────────────────────────
 
-class GanttTab(QWidget):
+class GanttTab(QWidget, ZoomMixin):
     N_FIXED = 3   # 担当者 | 作業名 | 計(h)
     actuals_changed = pyqtSignal()   # 実績の追加/編集/削除時に emit
 
     def __init__(self):
         super().__init__()
-        self._dates:         list = []
-        self._rows:          list = []
-        self._pinned_pairs:  set  = set()
-        self._row_order:     list = []   # (worker_id, task_id) の表示順リスト
+        self._dates:                list = []
+        self._rows:                 list = []
+        self._pinned_pairs:         set  = set()
+        self._row_order:            list = []   # (worker_id, task_id) の表示順リスト
+        self._worker_boundary_rows: set  = set()  # 担当者が変わる行インデックス
 
         # スナップショットモード
         self._snapshot_mode:  bool = False   # True=過去の確認モード
         self._snapshot_data:  dict | None = None   # 表示中のスナップショット
 
         # 列幅・行高さの保存（ユーザー変更を refresh 後も維持）
-        self._row_heights_by_pair: dict = {}       # (worker_id, task_id) -> height
-        self._fixed_col_widths:    list = [100, 140, 48]   # 担当者/作業名/計
-        self._date_col_widths:     dict = {}       # date_str -> width
+        _fm = QApplication.instance().fontMetrics()
+        self._row_heights_by_pair: dict = {}
+        self._fixed_col_widths: list = [
+            _fm.horizontalAdvance("山田 太郎") + 20,
+            _fm.horizontalAdvance("作業名テストABCDE") + 20,
+            _fm.horizontalAdvance("99.9") + 16,
+        ]
+        self._default_date_col_w: int = _fm.horizontalAdvance("8.0") + 16
+        self._default_row_h:      int = max(_fm.height() * 3 + 4, 40)
+        self._date_col_widths: dict = {}       # date_str -> width
         self._building_table: bool = False
         self._header_h: int = 20   # ヘッダー行の高さ（_sync_header_height で確定）
 
@@ -417,6 +450,7 @@ class GanttTab(QWidget):
         self._layout_save_timer.timeout.connect(self._save_all_layout)
 
         self._load_layout_settings()
+        self._init_zoom("zoom_gantt")
 
         # セルスパンドラッグ状態（予定の連続作成）
         self._drag_start_pos  = None
@@ -436,6 +470,7 @@ class GanttTab(QWidget):
         saved = db.get_setting('gantt_note')
         if saved:
             self.gantt_note.setPlainText(saved)
+        self._apply_zoom()
         QTimer.singleShot(0, self.refresh)
 
     # ── setup ─────────────────────────────────────────────────────────────────
@@ -479,6 +514,7 @@ class GanttTab(QWidget):
         refresh_btn.clicked.connect(self.refresh)
         cl.addWidget(refresh_btn)
 
+        self._make_zoom_controls(cl)
         cl.addStretch()
         layout.addLayout(cl)
 
@@ -558,7 +594,7 @@ class GanttTab(QWidget):
         layout.addLayout(ll)
 
         # ── 固定列テーブル（担当者・作業名・計）────────────────────────────────
-        self.fixed_table = QTableWidget()
+        self.fixed_table = ZoomableTableWidget()
         self.fixed_table.setColumnCount(self.N_FIXED)
         self.fixed_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.fixed_table.horizontalHeader().setMinimumSectionSize(20)
@@ -573,9 +609,11 @@ class GanttTab(QWidget):
         self.fixed_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.fixed_table.customContextMenuRequested.connect(self._on_fixed_context_menu)
         self.fixed_table.viewport().installEventFilter(self)
+        self._boundary_delegate = _WorkerBoundaryDelegate(self)
+        self.fixed_table.setItemDelegate(self._boundary_delegate)
 
         # ── 日付テーブル（横スクロール可）────────────────────────────────────
-        self.table = QTableWidget()
+        self.table = ZoomableTableWidget()
         self._delegate = _GanttDelegate(self)
         self.table.setItemDelegate(self._delegate)
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
@@ -585,7 +623,7 @@ class GanttTab(QWidget):
         self.table.horizontalHeader().setMinimumSectionSize(20)
         self.table.verticalHeader().setVisible(True)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.verticalHeader().setDefaultSectionSize(46)
+        self.table.verticalHeader().setDefaultSectionSize(self._default_row_h)
         self.table.verticalHeader().setMinimumSectionSize(20)
         self.table.verticalHeader().setFixedWidth(10)
         self.table.verticalHeader().setStyleSheet(
@@ -597,6 +635,7 @@ class GanttTab(QWidget):
 
         self.table.viewport().installEventFilter(self)
         self.table.installEventFilter(self)
+        self._register_zoom_table(self.fixed_table, self.table)
 
         self._drop_line = _DropLineWidget(self.fixed_table)
 
@@ -1058,6 +1097,15 @@ class GanttTab(QWidget):
             if wid in w_map and tid in t_map
         ]
 
+        # ── 担当者境界行を計算 ──────────────────────────────────────────────────
+        self._worker_boundary_rows = set()
+        _prev_wid = None
+        for _ri, _rw in enumerate(self._rows):
+            _wid = _rw['worker']['id']
+            if _prev_wid is not None and _wid != _prev_wid:
+                self._worker_boundary_rows.add(_ri)
+            _prev_wid = _wid
+
         # ── スナップショットモードの読み取り専用制御 ──────────────────────────
         is_snap = self._snapshot_mode and self._snapshot_data is not None
         if is_snap:
@@ -1097,10 +1145,10 @@ class GanttTab(QWidget):
         self.table.setHorizontalHeaderLabels(date_hdrs)
 
         for _c, _d in enumerate(self._dates):
-            self.table.setColumnWidth(_c, self._date_col_widths.get(_d.strftime('%Y-%m-%d'), 60))
+            self.table.setColumnWidth(_c, self._date_col_widths.get(_d.strftime('%Y-%m-%d'), self._default_date_col_w))
         for r in range(n_rows):
             _pair = (self._rows[r]['worker']['id'], self._rows[r]['task']['id'])
-            _rh   = self._row_heights_by_pair.get(_pair, 46)
+            _rh   = self._row_heights_by_pair.get(_pair, self._default_row_h)
             self.fixed_table.setRowHeight(r, _rh)
             self.table.setRowHeight(r, _rh)
             self.table.setVerticalHeaderItem(r, QTableWidgetItem(''))
@@ -1299,20 +1347,21 @@ class GanttTab(QWidget):
                 item = QTableWidgetItem()
                 holiday = get_holiday(d)
                 item.setData(Qt.UserRole, {
-                    'type':           'date_cell',
-                    'worker':         worker,
-                    'task':           task,
-                    'date':           ds,
-                    'date_obj':       d,
-                    'schedule':       sched,
-                    'actual':         actual,
-                    'span_pos':       span_pos,
-                    'span_len':       span_len,
-                    'holiday':        holiday,
-                    'task_color_idx': _cell_cidx,
-                    'span_gap':       bool(gap_span),
-                    'gap_status':     gap_span['status'] if gap_span else None,
-                    'text_color':     _text_colors.get(str(task['id'])),
+                    'type':            'date_cell',
+                    'worker':          worker,
+                    'task':            task,
+                    'date':            ds,
+                    'date_obj':        d,
+                    'schedule':        sched,
+                    'actual':          actual,
+                    'span_pos':        span_pos,
+                    'span_len':        span_len,
+                    'holiday':         holiday,
+                    'task_color_idx':  _cell_cidx,
+                    'span_gap':        bool(gap_span),
+                    'gap_status':      gap_span['status'] if gap_span else None,
+                    'text_color':      _text_colors.get(str(task['id'])),
+                    'worker_boundary': r in self._worker_boundary_rows,
                 })
                 tip_parts = []
                 if holiday:
@@ -1461,6 +1510,21 @@ class GanttTab(QWidget):
                 }
         except Exception:
             pass
+
+    # ── zoom ─────────────────────────────────────────────────────────────────
+
+    def _apply_zoom(self) -> None:
+        font = self._zoom_font()
+        self.fixed_table.setFont(font)
+        self.table.setFont(font)
+        fm = QFontMetrics(font)
+        self._default_row_h = max(fm.height() * 3 + 4, 40)
+        self.table.verticalHeader().setDefaultSectionSize(self._default_row_h)
+        self._update_zoom_label()
+        if self._dates:
+            self._build_table()
+
+    # ── layout persistence ───────────────────────────────────────────────────
 
     def _save_all_layout(self):
         """列幅・行高さをDBに保存する（デバウンスタイマーから呼ばれる）。"""

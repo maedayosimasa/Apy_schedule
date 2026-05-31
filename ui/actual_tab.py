@@ -1,12 +1,13 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-    QComboBox, QDateEdit, QPushButton, QTableView, QHeaderView,
+    QComboBox, QDateEdit, QPushButton, QHeaderView,
     QMessageBox, QDialog,
 )
 from PyQt5.QtCore import QDate, Qt, pyqtSignal, QSortFilterProxyModel
 import database as db
 from models import ActualTableModel
 from ui.dialogs import ActualDialog
+from ui.zoom_mixin import ZoomMixin, ZoomableTableView
 
 
 class _ActualSortProxy(QSortFilterProxyModel):
@@ -26,13 +27,15 @@ class _ActualSortProxy(QSortFilterProxyModel):
         return lv < rv
 
 
-class ActualTab(QWidget):
+class ActualTab(QWidget, ZoomMixin):
     actuals_changed = pyqtSignal()   # 実績の追加/編集/削除時に emit
 
     def __init__(self):
         super().__init__()
+        self._init_zoom("zoom_actual")
         self._setup_ui()
         self.refresh()
+        self._apply_zoom()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -61,6 +64,7 @@ class ActualTab(QWidget):
         search_btn = QPushButton("検索")
         search_btn.clicked.connect(self.refresh)
         fl.addWidget(search_btn)
+        self._make_zoom_controls(fl)
         fl.addStretch()
         layout.addWidget(group)
 
@@ -69,10 +73,10 @@ class ActualTab(QWidget):
         self.proxy = _ActualSortProxy()
         self.proxy.setSourceModel(self.model)
 
-        self.table = QTableView()
+        self.table = ZoomableTableView()
         self.table.setModel(self.proxy)
-        self.table.setSelectionBehavior(QTableView.SelectRows)
-        self.table.setSelectionMode(QTableView.SingleSelection)
+        self.table.setSelectionBehavior(ZoomableTableView.SelectRows)
+        self.table.setSelectionMode(ZoomableTableView.SingleSelection)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)   # 全列を基本に内容幅
         hh.setSectionResizeMode(3, QHeaderView.Stretch)         # 実施内容列だけ伸縮
@@ -80,9 +84,11 @@ class ActualTab(QWidget):
         self.table.setColumnHidden(0, True)
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(True)
         # デフォルトは実績日の昇順
         self.table.sortByColumn(4, Qt.AscendingOrder)
         layout.addWidget(self.table)
+        self._register_zoom_table(self.table)
 
         self.summary_label = QLabel()
         layout.addWidget(self.summary_label)
@@ -121,6 +127,7 @@ class ActualTab(QWidget):
         date_to   = self.to_date.date().toString("yyyy-MM-dd")
         data = db.get_actuals(worker_id=worker_id, date_from=date_from, date_to=date_to)
         self.model.refresh(data)
+        self.table.resizeRowsToContents()
         total = sum(r["actual_hours"] for r in data)
         self.summary_label.setText(f"件数: {len(data)} 件   合計実績時間: {total:.1f} h")
 
@@ -163,3 +170,10 @@ class ActualTab(QWidget):
             db.delete_actual(row["id"])
             self.refresh()
             self.actuals_changed.emit()
+
+    # ── zoom ─────────────────────────────────────────────────────────────────
+
+    def _apply_zoom(self) -> None:
+        self.table.setFont(self._zoom_font())
+        self.table.resizeRowsToContents()
+        self._update_zoom_label()

@@ -2612,6 +2612,7 @@
   ('ui.monthly_tab', 'C:\\Apy_schedule\\ui\\monthly_tab.py', 'PYMODULE'),
   ('ui.schedule_tab', 'C:\\Apy_schedule\\ui\\schedule_tab.py', 'PYMODULE'),
   ('ui.setup_dialog', 'C:\\Apy_schedule\\ui\\setup_dialog.py', 'PYMODULE'),
+  ('ui.zoom_mixin', 'C:\\Apy_schedule\\ui\\zoom_mixin.py', 'PYMODULE'),
   ('urllib',
    'C:\\Users\\gdre1\\anaconda3\\Lib\\urllib\\__init__.py',
    'PYMODULE'),

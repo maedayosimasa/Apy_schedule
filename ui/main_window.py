@@ -1,9 +1,9 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QTabWidget, QToolBar, QAction,
-    QMessageBox,
+    QMessageBox, QApplication,
 )
 from PyQt5.QtGui import QKeySequence
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSettings, QRect
 from ui.schedule_tab  import ScheduleTab
 from ui.actual_tab    import ActualTab
 from ui.gantt_tab     import GanttTab
@@ -15,6 +15,8 @@ import database as db
 from version import APP_NAME, APP_VERSION
 
 _AUTO_REFRESH_INTERVAL_MS = 60 * 1000  # 60秒ごとに自動リフレッシュ
+_SETTINGS_ORG = "AipySchedule"
+_SETTINGS_APP = "MainWindow"
 
 
 class MainWindow(QMainWindow):
@@ -23,6 +25,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.setMinimumSize(1100, 720)
         self._setup_ui()
+        self._restore_state()
         self._start_auto_refresh()
 
     def _setup_ui(self):
@@ -176,3 +179,46 @@ class MainWindow(QMainWindow):
         tab = self.tabs.widget(index)
         if hasattr(tab, "refresh"):
             tab.refresh()
+
+    # ── window state persistence ──────────────────────────────────────────────
+
+    def _restore_state(self):
+        s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        geometry = s.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+            self._ensure_on_screen()
+        state = s.value("windowState")
+        if state:
+            self.restoreState(state)
+        tab_index = s.value("activeTab", 0, type=int)
+        if 0 <= tab_index < self.tabs.count():
+            self.tabs.setCurrentIndex(tab_index)
+
+    def _ensure_on_screen(self):
+        """保存ジオメトリが現在のスクリーン範囲外にある場合、プライマリ画面に収める。"""
+        available = QRect()
+        for screen in QApplication.screens():
+            available = available.united(screen.availableGeometry())
+        geo = self.geometry()
+        # サイズが画面をはみ出す場合は縮小
+        w = min(geo.width(), available.width())
+        h = min(geo.height(), available.height())
+        if w != geo.width() or h != geo.height():
+            self.resize(w, h)
+            geo = self.geometry()
+        # ウィンドウが有効領域と 100px 以上重なっていなければ中央へ移動
+        if available.intersected(geo).width() < 100 or available.intersected(geo).height() < 100:
+            primary = QApplication.primaryScreen().availableGeometry()
+            geo.moveCenter(primary.center())
+            self.move(
+                max(primary.left(), min(geo.left(), primary.right()  - geo.width())),
+                max(primary.top(),  min(geo.top(),  primary.bottom() - geo.height())),
+            )
+
+    def closeEvent(self, event):
+        s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+        s.setValue("geometry", self.saveGeometry())
+        s.setValue("windowState", self.saveState())
+        s.setValue("activeTab", self.tabs.currentIndex())
+        super().closeEvent(event)

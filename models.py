@@ -112,6 +112,9 @@ class ActualTableModel(QAbstractTableModel):
             val = row.get(key, "")
             return str(val) if val is not None else ""
 
+        if role == Qt.TextAlignmentRole:
+            return int(Qt.AlignLeft | Qt.AlignTop)
+
         if role == Qt.BackgroundRole:
             if key == "actual_date":
                 try:

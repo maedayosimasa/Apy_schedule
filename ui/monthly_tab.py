@@ -20,8 +20,9 @@ from PyQt5.QtWidgets import (
     QHeaderView, QStyledItemDelegate, QLineEdit,
     QDialog, QFormLayout, QDialogButtonBox, QMessageBox,
 )
-from PyQt5.QtCore import Qt, QSize, QTimer
-from PyQt5.QtGui import QColor, QPen, QFont, QDoubleValidator
+from PyQt5.QtCore import Qt, QSize, QTimer, QEvent
+from PyQt5.QtGui import QColor, QPen, QFont, QDoubleValidator, QFontMetrics
+from ui.zoom_mixin import ZoomMixin, ZoomableTableWidget
 
 import database as db
 from holidays import get_holiday
@@ -118,11 +119,12 @@ class _MonthDelegate(QStyledItemDelegate):
 
 # ── main tab ─────────────────────────────────────────────────────────────────
 
-class MonthlyTab(QWidget):
+class MonthlyTab(QWidget, ZoomMixin):
     N_FIXED = 3   # 担当者 | 作業名 | 種別
 
     def __init__(self):
         super().__init__()
+        self._init_zoom("zoom_monthly")
         today = date.today()
         self._year          = today.year
         self._month         = today.month
@@ -132,6 +134,8 @@ class MonthlyTab(QWidget):
         self._actual_lu: dict = {}
         self._loading        = False
         self._pinned_pairs: set = set()
+        self._cur_n_date_cols: int = 0
+        self._cur_n_cols:      int = 0
         self._setup_ui()
         QTimer.singleShot(0, self.refresh)
 
@@ -181,6 +185,7 @@ class MonthlyTab(QWidget):
         add_row_btn.clicked.connect(self._add_row_dialog)
         nav.addWidget(add_row_btn)
 
+        self._make_zoom_controls(nav)
         nav.addStretch()
         layout.addLayout(nav)
 
@@ -201,7 +206,7 @@ class MonthlyTab(QWidget):
         layout.addLayout(ll)
 
         # ── テーブル ───────────────────────────────────────────────────────────
-        self.table = QTableWidget()
+        self.table = ZoomableTableWidget()
         self.table.setItemDelegate(_MonthDelegate())
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -214,6 +219,7 @@ class MonthlyTab(QWidget):
         self.table.setShowGrid(False)
         self.table.cellChanged.connect(self._on_cell_changed)
         layout.addWidget(self.table)
+        self._register_zoom_table(self.table)
 
     # ── 月ナビ ────────────────────────────────────────────────────────────────
 
@@ -237,6 +243,29 @@ class MonthlyTab(QWidget):
     def refresh(self):
         self._reload_worker_filter()
         self._build_table()
+
+    # ── zoom ─────────────────────────────────────────────────────────────────
+
+    def _apply_col_widths(self) -> None:
+        if self._cur_n_cols == 0:
+            return
+        fm   = self.table.fontMetrics()
+        _pad = 12
+        self.table.setColumnWidth(0, fm.horizontalAdvance("山田 太郎") + _pad * 2)
+        self.table.setColumnWidth(1, fm.horizontalAdvance("作業名テストABCDE") + _pad * 2)
+        self.table.setColumnWidth(2, fm.horizontalAdvance("予実") + _pad)
+        _dw = fm.horizontalAdvance("88") + _pad
+        for c in range(self.N_FIXED, self.N_FIXED + self._cur_n_date_cols):
+            self.table.setColumnWidth(c, _dw)
+        self.table.setColumnWidth(self._cur_n_cols - 1, fm.horizontalAdvance("999.9") + _pad)
+
+    def _apply_zoom(self) -> None:
+        font = self._zoom_font()
+        self.table.setFont(font)
+        fm = QFontMetrics(font)
+        self.table.verticalHeader().setDefaultSectionSize(fm.height() + 10)
+        self._apply_col_widths()
+        self._update_zoom_label()
 
     # ── テーブル構築 ──────────────────────────────────────────────────────────
 
@@ -314,13 +343,11 @@ class MonthlyTab(QWidget):
             ['担当者', '作業名', '種別'] + date_hdrs + ['月計']
         )
 
-        # 列幅
-        self.table.setColumnWidth(0, 88)
-        self.table.setColumnWidth(1, 130)
-        self.table.setColumnWidth(2, 38)
-        for c in range(self.N_FIXED, self.N_FIXED + n_date_cols):
-            self.table.setColumnWidth(c, 40)
-        self.table.setColumnWidth(n_cols - 1, 50)
+        # 列幅（フォントメトリクスから算出）
+        self._cur_n_date_cols = n_date_cols
+        self._cur_n_cols      = n_cols
+        self.table.setFont(self._zoom_font())
+        self._apply_col_widths()
 
         # 土日・祝日・今日ヘッダー色
         for ci, d in enumerate(self._dates):

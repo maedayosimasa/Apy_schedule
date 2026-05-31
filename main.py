@@ -7,9 +7,9 @@ from ui.main_window import MainWindow
 
 
 def main():
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
-    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     font = QFont("Yu Gothic UI", 9)
     font.setStyleHint(QFont.SansSerif)

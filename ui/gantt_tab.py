@@ -157,9 +157,9 @@ class _GanttDelegate(QStyledItemDelegate):
             bord_h    = _STATUS_BORDER.get(status, '#1565C0')
 
             top_y  = rect.top() + 2
-            text_h = 12                               # テキスト領域の高さ
+            text_h = 13                               # テキスト領域の高さ
             bar_y  = top_y + text_h + 1               # バーはテキストの下
-            bar_h  = max(3, mid_y - bar_y - 2)        # 上半分に収まる高さ
+            bar_h  = max(4, mid_y - bar_y - 1)        # 上半分に収まる高さ
             lm, rm = 2, 2
 
             # バー幅（連続スパン分を合計）
@@ -172,12 +172,12 @@ class _GanttDelegate(QStyledItemDelegate):
             else:
                 bar_w = rect.width()
 
-            # テキスト文字列
+            # テキスト文字列（作業項目 → カテゴリ → 作業名 の優先順）
             task_obj  = data.get('task', {})
             work_item = sched.get('note', '')
             category  = task_obj.get('category', '')
             text      = work_item or category or task_obj.get('title', '')
-            f = QFont("Yu Gothic UI"); f.setPointSize(7)
+            f = QFont("Yu Gothic UI"); f.setPointSize(8)
 
             # テキスト描画幅：右隣に予定のない空きセルがあれば文字が収まるまで拡張
             text_w = bar_w
@@ -207,7 +207,7 @@ class _GanttDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor(bord_h), 1))
             painter.drawPath(path)
 
-            # テキストを空き領域まで拡張したクリップで描画
+            # 作業項目テキストをバー上部（テキスト領域）に描画
             painter.setClipRect(
                 QRect(rect.left(), rect.top(), text_w + 4, rect.height()),
                 Qt.ReplaceClip,
@@ -254,8 +254,8 @@ class _GanttDelegate(QStyledItemDelegate):
             g_fill     = _TASK_PALETTE[task_cidx % len(_TASK_PALETTE)]
             g_color    = QColor(g_fill)
             g_color.setAlpha(80)   # 薄く塗って「同じ予定の続き」を示す
-            _gap_bar_y = rect.top() + 2 + 12 + 1      # メインバーと同じ位置
-            _gap_bar_h = max(3, mid_y - _gap_bar_y - 2)
+            _gap_bar_y = rect.top() + 2 + 13 + 1   # バーと同じ高さ
+            _gap_bar_h = max(4, mid_y - _gap_bar_y - 1)
             painter.fillRect(QRect(rect.left(), _gap_bar_y, rect.width(), _gap_bar_h), g_color)
 
         # ── 選択ハイライト ────────────────────────────────────────────────────
@@ -1374,7 +1374,7 @@ class GanttTab(QWidget, ZoomMixin):
 
         # テキストが1セル幅を超える場合、右隣の空きセルに top_half_clear マーカーを設定
         # （paint() がそのセルの上半分を塗らず、はみ出しテキストが見えるようにする）
-        _fov  = QFont("Yu Gothic UI"); _fov.setPointSize(7)
+        _fov  = QFont("Yu Gothic UI"); _fov.setPointSize(8)
         _fmov = QFontMetrics(_fov)
         _nd   = len(self._dates)
         for _r in range(n_rows):

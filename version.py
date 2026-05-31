@@ -2,7 +2,7 @@
 バージョンを上げるときはここだけ編集してリビルドする。"""
 
 APP_NAME    = "作業予定管理"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 APP_DATE    = "2026-05-31"
 APP_AUTHOR  = "前田 嘉正"
 
@@ -12,6 +12,13 @@ APP_AUTHOR  = "前田 嘉正"
 DB_SCHEMA_VERSION = 2
 
 CHANGELOG = [
+    {
+        "version": "1.2.2",
+        "date": "2026-05-31",
+        "changes": [
+            "エクセルバックアップ追加（ガントチャート・実績入力の月次自動保存）",
+        ],
+    },
     {
         "version": "1.2.1",
         "date": "2026-05-31",

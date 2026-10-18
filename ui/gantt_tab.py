@@ -1618,31 +1618,43 @@ class GanttTab(QWidget, ZoomMixin):
 
     def _get_span_dates(self, worker_id: int, task_id: int,
                         clicked: date) -> list:
-        """クリックした日を含む予定グループの実際の日付リストを返す。
-        14日以内のギャップは同一グループとみなす（週末・祝日を跨ぐ予定に対応）。"""
+        """クリックした日を含む予定セグメントの日付リストを返す。
+        _build_table と同じロジック（note・status が一致 かつ 非稼働日のみのギャップ）でグループ化する。
+        これにより単体の予定は単体として、連続スパンのみ同一グループとして扱われる。"""
         scheds = db.get_schedules(
             worker_id=worker_id,
             date_from=(clicked - timedelta(days=365)).strftime('%Y-%m-%d'),
             date_to=(clicked + timedelta(days=365)).strftime('%Y-%m-%d'),
         )
-        all_dates = sorted({
-            date.fromisoformat(s['scheduled_date'])
-            for s in scheds if s['task_id'] == task_id
-        })
-        if not all_dates:
+        row_scheds = sorted(
+            [s for s in scheds if s['task_id'] == task_id],
+            key=lambda s: s['scheduled_date'],
+        )
+        if not row_scheds:
             return [clicked]
-        MAX_GAP = 14
-        groups, cur_group = [], [all_dates[0]]
-        for d in all_dates[1:]:
-            if (d - cur_group[-1]).days <= MAX_GAP:
-                cur_group.append(d)
+
+        # _build_table と同じセグメント分割（note・status の一致 + 非稼働日のみのギャップ）
+        groups: list = []
+        cur_grp = [row_scheds[0]]
+        for s in row_scheds[1:]:
+            d_prev = date.fromisoformat(cur_grp[-1]['scheduled_date'])
+            d_curr = date.fromisoformat(s['scheduled_date'])
+            _same_item = (
+                s.get('note', '') == cur_grp[-1].get('note', '') and
+                s.get('status', '') == cur_grp[-1].get('status', '')
+            )
+            if _nonwork_gap_only(d_prev, d_curr) and _same_item:
+                cur_grp.append(s)
             else:
-                groups.append(cur_group)
-                cur_group = [d]
-        groups.append(cur_group)
-        for group in groups:
-            if clicked in group:
-                return group
+                groups.append(cur_grp)
+                cur_grp = [s]
+        groups.append(cur_grp)
+
+        clicked_str = clicked.strftime('%Y-%m-%d')
+        for grp in groups:
+            if any(s['scheduled_date'] == clicked_str for s in grp):
+                return [date.fromisoformat(s['scheduled_date']) for s in grp]
+
         return [clicked]
 
     def _edit_or_add_schedule(self, data: dict):

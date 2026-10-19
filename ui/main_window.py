@@ -16,6 +16,7 @@ from ui.monthly_tab   import MonthlyTab
 from ui.chart_widget  import ChartWidget
 from ui.master_tab    import MasterTab
 from ui.history_tab   import HistoryTab
+from ui.shared_tab    import SharedTab
 import database as db
 import excel_backup
 from version import APP_NAME, APP_VERSION
@@ -30,10 +31,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.setMinimumSize(1100, 720)
-        self._today = _date.today()   # 日付変化（深夜0時）検出用
+        self._today   = _date.today()
+        self._watcher = None
         self._setup_ui()
         self._restore_state()
         self._start_auto_refresh()
+        self._init_shared_sync()
         QTimer.singleShot(2000, self._startup_backup_check)
 
     def _setup_ui(self):
@@ -105,6 +108,7 @@ class MainWindow(QMainWindow):
         self.chart_widget  = ChartWidget()
         self.master_tab    = MasterTab()
         self.history_tab   = HistoryTab()
+        self.shared_tab    = SharedTab()
 
         self.tabs.addTab(self.gantt_tab,    "ガントチャート")
         self.tabs.addTab(self.monthly_tab,  "月次シート")
@@ -113,6 +117,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.chart_widget, "グラフ")
         self.tabs.addTab(self.master_tab,   "マスタ管理")
         self.tabs.addTab(self.history_tab,  "変更履歴")
+        self.tabs.addTab(self.shared_tab,   "チーム共有")
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs)
@@ -124,7 +129,9 @@ class MainWindow(QMainWindow):
         self._update_status_bar()
 
     def _update_status_bar(self):
-        self.statusBar().showMessage(f"DB: {db.DB_PATH}　│　準備完了")
+        user = db.get_user_name()
+        user_info = f"ユーザー: {user}　│　" if user else ""
+        self.statusBar().showMessage(f"{user_info}DB: {db.DB_PATH}　│　準備完了")
 
     def _start_auto_refresh(self):
         self._auto_refresh_timer = QTimer(self)
@@ -203,6 +210,52 @@ class MainWindow(QMainWindow):
         if not silent:
             self._update_undo_btns()
 
+    # ── 共有同期 ──────────────────────────────────────────────────────────────
+
+    def _init_shared_sync(self):
+        """起動時に全共有DBを読み込み、ファイル監視スレッドを開始する。"""
+        from pathlib import Path
+        from sync.reader import load_db_snapshot
+        from sync.cache  import shared_cache
+        from sync.watcher import DbWatcherThread
+
+        shared_folder = db.get_shared_folder()
+        if shared_folder is None or not shared_folder.exists():
+            return
+
+        # 起動時：フォルダ内の全DBを一括読み込み
+        for db_file in sorted(shared_folder.glob("*.db")):
+            snap = load_db_snapshot(db_file)
+            if snap:
+                shared_cache.update(db_file, snap)
+        self.shared_tab.refresh()
+
+        # ファイル監視開始
+        self._watcher = DbWatcherThread(shared_folder, parent=self)
+        self._watcher.db_updated.connect(self._on_shared_db_updated)
+        self._watcher.start()
+
+    def _on_shared_db_updated(self, path_str: str):
+        """Boxが他人のDBを同期した際に呼ばれるスロット（メインスレッド実行）。"""
+        from pathlib import Path
+        from sync.reader import load_db_snapshot
+        from sync.cache  import shared_cache
+
+        db_path = Path(path_str)
+        snap = load_db_snapshot(db_path)
+        if snap:
+            shared_cache.update(db_path, snap)
+            self.shared_tab.refresh()
+            user = db.get_user_name()
+            user_info = f"ユーザー: {user}　│　" if user else ""
+            self.statusBar().showMessage(
+                f"{user_info}DB: {db.DB_PATH}　│　{db_path.stem} のデータを更新しました", 4000
+            )
+
+    def refresh_shared_view(self):
+        """手動/自動更新時に共有タブを再描画する。"""
+        self.shared_tab.refresh()
+
     def _update_undo_btns(self):
         self._undo_action.setEnabled(db.can_undo())
         self._redo_action.setEnabled(db.can_redo())
@@ -229,6 +282,11 @@ class MainWindow(QMainWindow):
                 db.init_db()
                 self._refresh_all(silent=False)
                 self._update_status_bar()
+                # 共有同期を再起動（フォルダ変更に対応）
+                if self._watcher:
+                    self._watcher.stop()
+                    self._watcher = None
+                self._init_shared_sync()
                 QMessageBox.information(
                     self, "設定完了",
                     f"データベースの場所を変更しました。\n\n{db.DB_PATH}"
@@ -414,6 +472,8 @@ class MainWindow(QMainWindow):
     # ── window state persistence ──────────────────────────────────────────────
 
     def closeEvent(self, event):
+        if self._watcher:
+            self._watcher.stop()
         s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         s.setValue("geometry", self.saveGeometry())
         s.setValue("windowState", self.saveState())

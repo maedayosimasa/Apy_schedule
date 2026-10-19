@@ -15,7 +15,11 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=mpl_datas + [('version.py', '.')],
+    datas=mpl_datas + [
+        ('version.py', '.'),
+        ('sync/*.py',  'sync'),    # 共有同期モジュール
+        ('ui/*.py',    'ui'),      # UIモジュール（shared_tab等）
+    ],
     hiddenimports=[
         # matplotlib バックエンド（matplotlib.use() で動的にロードされるため明示）
         'matplotlib.backends.backend_qt5agg',
@@ -23,6 +27,12 @@ a = Analysis(
         # PyQt5
         'PyQt5.sip',
         'PyQt5.QtPrintSupport',
+        # watchdog（ファイル監視・動的ロードのため明示）
+        'watchdog',
+        'watchdog.observers',
+        'watchdog.observers.winapi',      # Windows ネイティブ監視
+        'watchdog.observers.polling',     # フォールバック
+        'watchdog.events',
     ],
     hookspath=[],
     hooksconfig={},

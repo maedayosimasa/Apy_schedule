@@ -70,6 +70,7 @@ missing module named 'setuptools.extern.packaging.version' - imported by setupto
 missing module named 'setuptools.extern.packaging.specifiers' - imported by setuptools.dist (top-level), setuptools.config.setupcfg (top-level), setuptools.config._apply_pyprojecttoml (delayed)
 missing module named 'setuptools.extern.packaging.markers' - imported by setuptools._core_metadata (top-level), setuptools.dist (top-level), setuptools.config.setupcfg (top-level)
 missing module named 'setuptools.extern.ordered_set' - imported by setuptools.dist (top-level)
+missing module named _watchdog_fsevents - imported by watchdog.observers.fsevents (top-level)
 missing module named sip - imported by matplotlib.backends.qt_compat (delayed, conditional), PyQt5 (top-level)
 excluded module named unittest - imported by numpy.testing (top-level), doctest (top-level), numpy.testing._private.utils (top-level), numpy.testing._private.parameterized (top-level), tornado.util (conditional), tornado.httputil (conditional)
 missing module named _curses - imported by curses (top-level), curses.has_key (top-level)

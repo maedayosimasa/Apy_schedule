@@ -22,35 +22,64 @@ def get_config_path() -> Path:
     return _CONFIG_FILE
 
 
-def get_db_path() -> Path:
-    """設定ファイルから DB パスを読む。未設定なら None を返す。"""
+def _read_config() -> dict:
     if _CONFIG_FILE.exists():
         try:
-            cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-            p = cfg.get("db_path", "")
-            if p:
-                return Path(p)
+            return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
-    return None
+    return {}
 
 
-def set_db_path(path: Path):
-    """DB パスをローカル設定ファイルに保存する。"""
+def _write_config(cfg: dict):
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = {}
-    if _CONFIG_FILE.exists():
-        try:
-            cfg = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    cfg["db_path"] = str(path)
     _CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def get_db_path() -> Path | None:
+    """明示的に指定されたDBパスを返す。未設定なら None。"""
+    p = _read_config().get("db_path", "")
+    return Path(p) if p else None
+
+
+def set_db_path(path: Path):
+    cfg = _read_config()
+    cfg["db_path"] = str(path)
+    _write_config(cfg)
+
+
+def get_user_name() -> str:
+    return _read_config().get("user_name", "")
+
+
+def set_user_name(name: str):
+    cfg = _read_config()
+    cfg["user_name"] = name
+    _write_config(cfg)
+
+
+def get_shared_folder() -> Path | None:
+    p = _read_config().get("shared_folder", "")
+    return Path(p) if p else None
+
+
+def set_shared_folder(path: Path):
+    cfg = _read_config()
+    cfg["shared_folder"] = str(path)
+    _write_config(cfg)
+
+
 def _resolve_db_path() -> Path:
-    p = get_db_path()
-    return p if p else _DEFAULT_DB_PATH
+    """優先順位: 1) shared_folder+user_name  2) db_path  3) デフォルト"""
+    cfg = _read_config()
+    shared = cfg.get("shared_folder", "")
+    user   = cfg.get("user_name", "")
+    if shared and user:
+        return Path(shared) / f"{user}.db"
+    db_path = cfg.get("db_path", "")
+    if db_path:
+        return Path(db_path)
+    return _DEFAULT_DB_PATH
 
 
 # 現在の DB パス（モジュール変数として公開）

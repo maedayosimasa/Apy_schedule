@@ -78,6 +78,9 @@ echo  Base  : dist\作業予定管理.exe
 echo  配布用 : %VERSIONED%
 echo  Version: v%VERSION%  (%VERDATE%)
 echo  DB Schema: v%SCHEMA_VER%
+echo.
+echo  ※ dist\ と build\ は git 管理外です。
+echo    配布用EXEは BOX の共有フォルダへ手動でコピーして配布してください。
 echo ==============================================
 echo.
 pause

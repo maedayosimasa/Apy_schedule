@@ -1,3 +1,17 @@
 # ビルド成果物（EXE は BOX などで配布し、git には含めない）
 build/
 dist/
+
+# Python / テスト・型チェックのキャッシュ（自動生成）
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
+tests/coverage_html/
+
+# データベース（利用者のデータは git に含めない）
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.lock

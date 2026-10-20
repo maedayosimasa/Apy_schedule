@@ -69,11 +69,47 @@ def set_shared_folder(path: Path):
     _write_config(cfg)
 
 
+def clear_shared_folder():
+    """共有フォルダ設定を外す（個人用＝DBファイル直接指定モードにする）。"""
+    cfg = _read_config()
+    cfg.pop("shared_folder", None)
+    _write_config(cfg)
+
+
+def is_personal_mode() -> bool:
+    """共有フォルダなしで DB ファイルを直接指定している（個人用）なら True。"""
+    return get_shared_folder() is None and get_db_path() is not None
+
+
+# ── ログインセッション ────────────────────────────────────────────────────────
+# 管理者は設定ファイルの user_name を書き換えずに、編集対象ユーザーを切り替える。
+
+_SESSION_USER: str | None = None   # 編集中のユーザー（None なら設定ファイルの user_name）
+_IS_ADMIN = False
+
+
+def set_session(user: str | None, admin: bool = False):
+    """このアプリ起動中の編集対象ユーザーと管理者フラグを設定し、DB_PATH を再解決する。"""
+    global _SESSION_USER, _IS_ADMIN
+    _SESSION_USER = user
+    _IS_ADMIN = admin
+    refresh_db_path()
+
+
+def is_admin_session() -> bool:
+    return _IS_ADMIN
+
+
+def get_current_user() -> str:
+    """現在メインで編集しているユーザー名。"""
+    return _SESSION_USER if _SESSION_USER is not None else get_user_name()
+
+
 def _resolve_db_path() -> Path:
     """優先順位: 1) shared_folder+user_name  2) db_path  3) デフォルト"""
     cfg = _read_config()
     shared = cfg.get("shared_folder", "")
-    user   = cfg.get("user_name", "")
+    user   = _SESSION_USER if _SESSION_USER is not None else cfg.get("user_name", "")
     if shared and user:
         return Path(shared) / f"{user}.db"
     db_path = cfg.get("db_path", "")
@@ -625,6 +661,14 @@ def _push_op(op):
         if len(_undo_stack) > _MAX_STACK:
             _undo_stack.pop(0)
         _redo_stack.clear()
+
+
+def clear_undo_history():
+    """戻る/進むの履歴を消す（編集対象DBを切り替えたとき、前のDBのIDを参照しないように）。"""
+    global _current_group
+    _undo_stack.clear()
+    _redo_stack.clear()
+    _current_group = None
 
 
 def can_undo():

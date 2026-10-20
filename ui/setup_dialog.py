@@ -216,5 +216,6 @@ class DbPathDialog(QDialog):
             return
 
         db.set_db_path(p)
+        db.clear_shared_folder()   # 共有設定が残ると _resolve_db_path が共有側を優先してしまう
         db.refresh_db_path()
         self.accept()

@@ -1014,6 +1014,22 @@ class GanttTab(QWidget, ZoomMixin):
 
     # ── public ────────────────────────────────────────────────────────────────
 
+    def reload_db_settings(self):
+        """DB を切り替えた後に、DBごとに保存している行順・列幅・検討事項を読み直す。"""
+        self._note_save_timer.stop()      # 前のDBの検討事項を新しいDBへ保存しないように
+        self._layout_save_timer.stop()
+        self._row_order = []
+        self._pinned_pairs = set()
+        self._row_heights_by_pair = {}
+        self._date_col_widths = {}
+        self._load_layout_settings()
+        self.gantt_note.blockSignals(True)
+        self.gantt_note.setPlainText(db.get_setting('gantt_note') or '')
+        self.gantt_note.blockSignals(False)
+        if self._snap_toggle_btn.isChecked():
+            self._snap_toggle_btn.setChecked(False)   # スナップショットは前のDBのもの
+        self.refresh()
+
     def refresh(self):
         if self._snapshot_mode:
             return   # スナップショットモード中は自動リフレッシュで上書きしない

@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QTabWidget, QToolBar, QAction,
     QMessageBox, QApplication, QDialog, QFormLayout, QLineEdit,
     QPushButton, QHBoxLayout, QCheckBox, QFileDialog, QDialogButtonBox,
-    QLabel,
+    QLabel, QComboBox, QInputDialog,
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QTimer, QSettings, QRect
@@ -76,6 +76,22 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         toolbar.addAction(settings_action)
 
+        self._password_action = QAction("🔒 パスワード", self)
+        self._password_action.setToolTip("ログインパスワードの設定・変更")
+        self._password_action.triggered.connect(self._change_password)
+        toolbar.addAction(self._password_action)
+
+        # 管理者用：編集対象ユーザーの切り替え
+        self._admin_sep = toolbar.addSeparator()
+        self._admin_label = QLabel("  🔑 管理者　編集対象: ")
+        self._admin_label.setStyleSheet("color:#6A1B9A; font-weight:bold;")
+        self._admin_label_action = toolbar.addWidget(self._admin_label)
+        self._target_combo = QComboBox()
+        self._target_combo.setMinimumWidth(120)
+        self._target_combo.setToolTip("管理者：編集するユーザーを切り替えます")
+        self._target_combo.activated[str].connect(self._on_target_selected)
+        self._target_combo_action = toolbar.addWidget(self._target_combo)
+
         toolbar.addSeparator()
 
         excel_action = QAction("📊 Excel出力", self)
@@ -129,12 +145,121 @@ class MainWindow(QMainWindow):
         self.actual_tab.actuals_changed.connect(self.gantt_tab.refresh)
 
         self._update_status_bar()
+        self._apply_session_ui()
 
     def _update_window_title(self):
         title = f"{APP_NAME}  v{APP_VERSION}"
-        if db.is_db_in_shared_folder():
-            title += f"　―　メイン: {db.get_user_name()}（他のユーザーは参照）"
+        if db.is_admin_session():
+            title += f"　―　🔑 管理者　編集対象: {db.get_current_user()}（他のユーザーは参照）"
+        elif db.is_db_in_shared_folder():
+            title += f"　―　メイン: {db.get_current_user()}（他のユーザーは参照）"
         self.setWindowTitle(title)
+
+    # ── 管理者：編集対象の切り替え ────────────────────────────────────────────
+
+    def _apply_session_ui(self):
+        """管理者用ツールバー項目の表示と、編集対象リストを現在の状態に合わせる。"""
+        admin = db.is_admin_session()
+        for act in (self._admin_sep, self._admin_label_action, self._target_combo_action):
+            act.setVisible(admin)
+        self._password_action.setVisible(db.get_shared_folder() is not None)
+        if not admin:
+            return
+        folder = db.get_shared_folder()
+        users = sorted(f.stem for f in folder.glob("*.db")) if folder else []
+        self._target_combo.blockSignals(True)
+        self._target_combo.clear()
+        self._target_combo.addItems(users)
+        self._target_combo.setCurrentText(db.get_current_user())
+        self._target_combo.blockSignals(False)
+
+    def _on_target_selected(self, name: str):
+        from sync import presence
+        if name == db.get_current_user():
+            return
+        folder = db.get_shared_folder()
+        lock = presence.read_lock(folder, name)
+        if lock and not presence.is_mine(lock):
+            ret = QMessageBox.warning(
+                self, "使用中のユーザー",
+                f"「{name}」は現在 {lock.get('host', '?')} で開かれています。\n\n"
+                "同時に編集すると BOX Drive の同期でどちらかの変更が失われる恐れがあります。\n\n"
+                f"それでも「{name}」を編集しますか？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if ret != QMessageBox.Yes:
+                self._target_combo.setCurrentText(db.get_current_user())
+                return
+        self._switch_target(name)
+
+    def _switch_target(self, name: str):
+        """管理者の編集対象DBを切り替え、全タブを読み直す。"""
+        self._stop_presence()
+        db.set_session(name, admin=True)
+        db.init_db()
+        db.clear_undo_history()   # 戻る/進むは前のDBのIDを指すため破棄
+        self.gantt_tab.reload_db_settings()
+        self._start_presence()
+        self._update_window_title()
+        self._update_status_bar()
+        self._apply_session_ui()
+        self._refresh_all(silent=False)
+        self.shared_tab.refresh()
+        self.statusBar().showMessage(
+            f"🔑 管理者　編集対象を「{name}」に切り替えました　│　DB: {db.DB_PATH}", 5000
+        )
+
+    # ── パスワード ────────────────────────────────────────────────────────────
+
+    def _change_password(self):
+        from sync import auth
+        from ui.password_dialogs import PasswordChangeDialog
+        folder = db.get_shared_folder()
+        if folder is None:
+            return
+
+        if db.is_admin_session():
+            users = sorted(f.stem for f in folder.glob("*.db"))
+            choices = [auth.ADMIN_LABEL] + users
+            who, ok = QInputDialog.getItem(
+                self, "パスワードの設定",
+                "パスワードを設定・変更する対象を選んでください:", choices, 0, False,
+            )
+            if not ok:
+                return
+            if who == auth.ADMIN_LABEL:
+                dlg = PasswordChangeDialog(
+                    self, title="管理者パスワードの変更",
+                    verify_current=lambda pw: auth.verify_admin(folder, pw),
+                    allow_empty=False, forbidden={auth.DEFAULT_ADMIN_PW},
+                )
+                if dlg.exec_() == QDialog.Accepted:
+                    auth.set_admin_password(folder, dlg.password())
+                    QMessageBox.information(self, "完了", "管理者のパスワードを変更しました。")
+                return
+            # 管理者は現在のパスワードなしでユーザーのパスワードを再設定・解除できる
+            dlg = PasswordChangeDialog(
+                self, title=f"「{who}」のパスワード設定",
+                message=f"管理者として「{who}」のパスワードを設定します。<br>"
+                        "空欄のままOKでパスワードを解除します。",
+            )
+            target = auth.user_db_path(folder, who)
+        else:
+            target = db.DB_PATH
+            has_pw = auth.user_has_password(target)
+            dlg = PasswordChangeDialog(
+                self, title="パスワードの設定・変更",
+                message=f"「{db.get_current_user()}」のログインパスワードを設定します。<br>"
+                        "空欄のままOKでパスワードなしになります。",
+                verify_current=(lambda pw: auth.verify_user(target, pw)) if has_pw else None,
+            )
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        auth.set_user_password(target, dlg.password())
+        QMessageBox.information(
+            self, "完了",
+            "パスワードを設定しました。" if dlg.password() else "パスワードを解除しました。",
+        )
 
     # ── 使用中ロック（他PCに「誰が開いているか」を知らせる）────────────────────
 
@@ -142,8 +267,8 @@ class MainWindow(QMainWindow):
         from sync import presence
         if not db.is_db_in_shared_folder():
             return
-        self._presence_user = db.get_user_name()
-        presence.acquire(db.get_shared_folder(), self._presence_user)
+        self._presence_user = db.get_current_user()
+        presence.acquire(db.get_shared_folder(), self._presence_user, admin=db.is_admin_session())
         self._presence_timer = QTimer(self)
         self._presence_timer.timeout.connect(
             lambda: presence.heartbeat(db.get_shared_folder(), self._presence_user))
@@ -158,8 +283,11 @@ class MainWindow(QMainWindow):
         self._presence_user = None
 
     def _update_status_bar(self):
-        user = db.get_user_name()
-        user_info = f"メイン: {user}　│　" if user and db.is_db_in_shared_folder() else ""
+        user = db.get_current_user()
+        if db.is_admin_session():
+            user_info = f"🔑 管理者　編集対象: {user}　│　"
+        else:
+            user_info = f"メイン: {user}　│　" if user and db.is_db_in_shared_folder() else ""
         self.statusBar().showMessage(f"{user_info}DB: {db.DB_PATH}　│　準備完了")
 
     def _start_auto_refresh(self):
@@ -278,7 +406,7 @@ class MainWindow(QMainWindow):
             # 他ユーザーのDB更新時のみガントを再描画（自DBの書込み毎に編集中の表を壊さない）
             if db_path.stem != db.DB_PATH.stem:
                 self.gantt_tab.refresh()
-            user = db.get_user_name()
+            user = db.get_current_user()
             user_info = f"ユーザー: {user}　│　" if user else ""
             self.statusBar().showMessage(
                 f"{user_info}DB: {db.DB_PATH}　│　{db_path.stem} のデータを更新しました", 4000
@@ -311,6 +439,9 @@ class MainWindow(QMainWindow):
         dlg = DbPathDialog(self, first_run=False)
         old_folder = db.get_shared_folder()
         if dlg.exec_():
+            if db.is_admin_session():
+                db.set_session(None, admin=False)   # 設定変更後はこのPCの利用者として開き直す
+                db.clear_undo_history()
             if self._presence_user is not None:
                 from sync import presence
                 self._presence_timer.stop()
@@ -325,8 +456,10 @@ class MainWindow(QMainWindow):
                     self._watcher.stop()
                     self._watcher = None
                 self._init_shared_sync()
+                self.gantt_tab.reload_db_settings()
                 self._start_presence()
                 self._update_window_title()
+                self._apply_session_ui()
                 QMessageBox.information(
                     self, "設定完了",
                     f"データベースの場所を変更しました。\n\n{db.DB_PATH}"

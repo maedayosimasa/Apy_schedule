@@ -11,6 +11,7 @@ import socket
 from datetime import datetime
 from pathlib import Path
 
+from sync.auth import user_has_password
 from sync.reader import load_db_snapshot
 
 LOCK_SUFFIX  = ".lock"
@@ -44,18 +45,18 @@ def read_lock(folder: Path, user: str) -> dict | None:
     return lock
 
 
-def _write_lock(folder: Path, user: str, started: str):
+def _write_lock(folder: Path, user: str, started: str, admin: bool = False):
     now = datetime.now().isoformat(timespec="seconds")
-    data = {**_me(), "user": user, "started": started, "heartbeat": now}
+    data = {**_me(), "user": user, "started": started, "heartbeat": now, "admin": admin}
     _lock_path(folder, user).write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
     )
 
 
-def acquire(folder: Path, user: str):
-    """自分がこのユーザーのDBをメインで開いたことを記録する。"""
+def acquire(folder: Path, user: str, admin: bool = False):
+    """自分がこのユーザーのDBをメインで開いたことを記録する（admin=管理者として編集中）。"""
     try:
-        _write_lock(folder, user, datetime.now().isoformat(timespec="seconds"))
+        _write_lock(folder, user, datetime.now().isoformat(timespec="seconds"), admin)
     except OSError:
         pass   # 共有フォルダに書けなくてもアプリ自体は動かす
 
@@ -66,7 +67,7 @@ def heartbeat(folder: Path, user: str):
         return   # 他のPCが使用中（自分がロックを奪わない）
     started = (lock or {}).get("started") or datetime.now().isoformat(timespec="seconds")
     try:
-        _write_lock(folder, user, started)
+        _write_lock(folder, user, started, bool((lock or {}).get("admin")))
     except OSError:
         pass
 
@@ -110,5 +111,6 @@ def list_users(folder: Path) -> list[dict]:
             "readable":  bool(snap),
             "mtime":     mtime,
             "lock":      active.get(f.stem),
+            "has_password": user_has_password(f),
         })
     return users

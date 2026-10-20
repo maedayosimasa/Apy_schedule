@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -107,26 +108,34 @@ def main():
         }
     """)
 
-    # 初回起動（DB パス未設定）ならセットアップダイアログを表示
-    just_configured = False
-    if db.get_db_path() is None and db.get_shared_folder() is None:
-        from ui.setup_dialog import DbPathDialog
-        dlg = DbPathDialog(first_run=True)
-        # キャンセルでも続行（EXE と同じフォルダをデフォルト使用）
-        just_configured = dlg.exec_() == DbPathDialog.Accepted
-
-    # 共有フォルダモード：起動毎に「自分（メイン）」を選ばせ、他ユーザーは参照で表示
-    shared_folder = db.get_shared_folder()
-    if not just_configured and shared_folder is not None and shared_folder.exists():
+    # 起動時ダイアログ：「ユーザー選択」で自分（メイン）を選び、他ユーザーは参照で表示。
+    # 初回起動・共有フォルダが見つからない場合は「初期設定」タブから始まる。
+    # 個人用（DBファイル直接指定）で使っている場合は表示しない（⚙ 設定から変更可）。
+    backup_dir   = ""
+    new_password = ""
+    if not db.is_personal_mode():
         from ui.user_select_dialog import UserSelectDialog
-        sel = UserSelectDialog(shared_folder)
+        sel = UserSelectDialog(db.get_shared_folder())
         if sel.exec_() != UserSelectDialog.Accepted:
             sys.exit(0)
-        db.set_user_name(sel.selected_user())
-        db.refresh_db_path()
+        if sel.is_admin():
+            # 管理者は設定ファイルの user_name（このPCの利用者）を書き換えない
+            db.set_session(sel.selected_user(), admin=True)
+        else:
+            if sel.selected_user():
+                db.set_user_name(sel.selected_user())
+            db.refresh_db_path()
+        backup_dir   = sel.backup_dir()
+        new_password = sel.new_user_password()
 
     try:
         db.init_db()
+        if new_password:   # 新規ユーザー：DB を作成した後でパスワードを保存
+            from sync import auth
+            auth.set_user_password(db.DB_PATH, new_password)
+        if backup_dir:   # Excel バックアップ先はユーザーごとのDBに保存されるため init_db 後に反映
+            import excel_backup
+            excel_backup.set_backup_dir(Path(backup_dir))
         db.auto_save_today_snapshot()
         ok, msg = db.check_schema_compatibility()
         if not ok:

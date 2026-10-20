@@ -27,6 +27,7 @@ def shared_env(tmp_path, monkeypatch):
     from sync.cache import shared_cache
 
     monkeypatch.setattr(db, "get_shared_folder", lambda: tmp_path)
+    monkeypatch.setattr(db, "_JOURNAL_MODE", "DELETE")   # 共有フォルダ内DBの実運用と同じ
     _make_other_db(tmp_path / "前田.db")
     own = tmp_path / "山田.db"
     monkeypatch.setattr(db, "DB_PATH", own)
@@ -137,7 +138,9 @@ class TestGanttTeamView:
 
     def test_other_db_never_written(self, qapp, shared_env):
         db, folder = shared_env
+        import gc
         other = folder / "前田.db"
+        gc.collect()   # 作成時の未closeの接続を確実に閉じてから比較する
         before = other.read_bytes()
         _load_all(folder)
         tab = self._tab(qapp, db)

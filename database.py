@@ -88,8 +88,30 @@ DB_PATH = _resolve_db_path()
 
 def refresh_db_path():
     """設定変更後に DB_PATH を再解決する。"""
-    global DB_PATH
+    global DB_PATH, _JOURNAL_MODE
     DB_PATH = _resolve_db_path()
+    _JOURNAL_MODE = _resolve_journal_mode()
+
+
+def is_db_in_shared_folder() -> bool:
+    """自分のDBが共有フォルダ内（BOX Drive 同期対象）にあれば True。"""
+    shared = get_shared_folder()
+    if shared is None:
+        return False
+    try:
+        return DB_PATH.resolve().parent == shared.resolve()
+    except OSError:
+        return False
+
+
+def _resolve_journal_mode() -> str:
+    # BOX Drive はファイル単位で同期するため、WAL だと更新が -wal に溜まり
+    # 他PCには本体 .db の古い内容しか届かない（-shm/-wal の同期で破損の恐れもある）。
+    # 共有フォルダ内のDBは DELETE モードにし、コミット毎に本体 .db へ反映させる。
+    return "DELETE" if is_db_in_shared_folder() else "WAL"
+
+
+_JOURNAL_MODE = _resolve_journal_mode()
 
 
 def get_connection():
@@ -97,7 +119,7 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")   # 30秒待機
-    conn.execute("PRAGMA journal_mode = WAL")      # 複数ユーザー同時アクセス対応
+    conn.execute(f"PRAGMA journal_mode = {_JOURNAL_MODE}")
     return conn
 
 

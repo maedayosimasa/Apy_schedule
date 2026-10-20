@@ -108,10 +108,22 @@ def main():
     """)
 
     # 初回起動（DB パス未設定）ならセットアップダイアログを表示
-    if db.get_db_path() is None:
+    just_configured = False
+    if db.get_db_path() is None and db.get_shared_folder() is None:
         from ui.setup_dialog import DbPathDialog
         dlg = DbPathDialog(first_run=True)
-        dlg.exec_()  # キャンセルでも続行（EXE と同じフォルダをデフォルト使用）
+        # キャンセルでも続行（EXE と同じフォルダをデフォルト使用）
+        just_configured = dlg.exec_() == DbPathDialog.Accepted
+
+    # 共有フォルダモード：起動毎に「自分（メイン）」を選ばせ、他ユーザーは参照で表示
+    shared_folder = db.get_shared_folder()
+    if not just_configured and shared_folder is not None and shared_folder.exists():
+        from ui.user_select_dialog import UserSelectDialog
+        sel = UserSelectDialog(shared_folder)
+        if sel.exec_() != UserSelectDialog.Accepted:
+            sys.exit(0)
+        db.set_user_name(sel.selected_user())
+        db.refresh_db_path()
 
     try:
         db.init_db()

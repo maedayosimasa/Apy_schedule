@@ -48,6 +48,17 @@ class SharedDataCache:
                     result.append(row)
             return result
 
+    def get_all_tasks(self) -> list[dict]:
+        with self._lock:
+            result = []
+            for source, snap in self._snapshots.items():
+                for t in snap.get("tasks", []):
+                    row = dict(t)
+                    row["_source"] = source
+                    row["_uid"]    = f"{source}:{t['id']}"
+                    result.append(row)
+            return result
+
     def get_all_workers(self) -> list[dict]:
         with self._lock:
             result = []

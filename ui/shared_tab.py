@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 import database as db
+from sync import presence
 from sync.cache import shared_cache
 
 _STATUS_LABELS = {
@@ -135,11 +136,16 @@ class SharedTab(QWidget):
         self._fill_table(rows)
 
         user_count = len({r["_source"] for r in rows})
-        self._summary_label.setText(
-            f"チーム共有スケジュール（読み取り専用）　{user_count} ユーザー / {len(rows)} 件"
-        )
+        text = f"チーム共有スケジュール（読み取り専用）　{user_count} ユーザー / {len(rows)} 件"
+        folder = db.get_shared_folder()
+        if folder is not None and folder.exists():
+            online = sorted(presence.active_users(folder))
+            if online:
+                text += "　│　🟢 使用中: " + "、".join(online)
+        self._summary_label.setText(text)
 
     def _fill_table(self, rows: list[dict]):
+        own = db.DB_PATH.stem if db.is_db_in_shared_folder() else None
         self._table.setRowCount(0)
         for row_data in rows:
             row = self._table.rowCount()
@@ -149,6 +155,8 @@ class SharedTab(QWidget):
 
             for col, (_, key) in enumerate(_COLUMNS):
                 val = row_data.get(key, "")
+                if key == "_source":
+                    val = f"{val}（{'メイン' if val == own else '参照'}）"
                 if key == "status":
                     val = _STATUS_LABELS.get(str(val), str(val))
                 text = str(val) if val is not None else ""

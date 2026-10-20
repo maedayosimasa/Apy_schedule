@@ -29,10 +29,12 @@ _SETTINGS_APP = "MainWindow"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.setMinimumSize(1100, 720)
         self._today   = _date.today()
         self._watcher = None
+        self._presence_user = None   # メインで開いているユーザー（ロック保持中）
+        self._update_window_title()
+        self._start_presence()
         self._setup_ui()
         self._restore_state()
         self._start_auto_refresh()
@@ -128,9 +130,36 @@ class MainWindow(QMainWindow):
 
         self._update_status_bar()
 
+    def _update_window_title(self):
+        title = f"{APP_NAME}  v{APP_VERSION}"
+        if db.is_db_in_shared_folder():
+            title += f"　―　メイン: {db.get_user_name()}（他のユーザーは参照）"
+        self.setWindowTitle(title)
+
+    # ── 使用中ロック（他PCに「誰が開いているか」を知らせる）────────────────────
+
+    def _start_presence(self):
+        from sync import presence
+        if not db.is_db_in_shared_folder():
+            return
+        self._presence_user = db.get_user_name()
+        presence.acquire(db.get_shared_folder(), self._presence_user)
+        self._presence_timer = QTimer(self)
+        self._presence_timer.timeout.connect(
+            lambda: presence.heartbeat(db.get_shared_folder(), self._presence_user))
+        self._presence_timer.start(presence.HEARTBEAT_MS)
+
+    def _stop_presence(self):
+        from sync import presence
+        if self._presence_user is None:
+            return
+        self._presence_timer.stop()
+        presence.release(db.get_shared_folder(), self._presence_user)
+        self._presence_user = None
+
     def _update_status_bar(self):
         user = db.get_user_name()
-        user_info = f"ユーザー: {user}　│　" if user else ""
+        user_info = f"メイン: {user}　│　" if user and db.is_db_in_shared_folder() else ""
         self.statusBar().showMessage(f"{user_info}DB: {db.DB_PATH}　│　準備完了")
 
     def _start_auto_refresh(self):
@@ -246,6 +275,9 @@ class MainWindow(QMainWindow):
         if snap:
             shared_cache.update(db_path, snap)
             self.shared_tab.refresh()
+            # 他ユーザーのDB更新時のみガントを再描画（自DBの書込み毎に編集中の表を壊さない）
+            if db_path.stem != db.DB_PATH.stem:
+                self.gantt_tab.refresh()
             user = db.get_user_name()
             user_info = f"ユーザー: {user}　│　" if user else ""
             self.statusBar().showMessage(
@@ -277,7 +309,13 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         from ui.setup_dialog import DbPathDialog
         dlg = DbPathDialog(self, first_run=False)
+        old_folder = db.get_shared_folder()
         if dlg.exec_():
+            if self._presence_user is not None:
+                from sync import presence
+                self._presence_timer.stop()
+                presence.release(old_folder, self._presence_user)
+                self._presence_user = None
             try:
                 db.init_db()
                 self._refresh_all(silent=False)
@@ -287,6 +325,8 @@ class MainWindow(QMainWindow):
                     self._watcher.stop()
                     self._watcher = None
                 self._init_shared_sync()
+                self._start_presence()
+                self._update_window_title()
                 QMessageBox.information(
                     self, "設定完了",
                     f"データベースの場所を変更しました。\n\n{db.DB_PATH}"
@@ -474,6 +514,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._watcher:
             self._watcher.stop()
+        self._stop_presence()
         s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
         s.setValue("geometry", self.saveGeometry())
         s.setValue("windowState", self.saveState())

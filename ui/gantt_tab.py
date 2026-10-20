@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QMenu, QDialog, QMessageBox, QHeaderView,
     QFormLayout, QDialogButtonBox, QStyledItemDelegate, QLineEdit,
     QTextEdit, QGroupBox, QSizePolicy, QColorDialog, QSpinBox,
-    QFrame, QApplication,
+    QFrame, QApplication, QCheckBox,
 )
 from PyQt5.QtCore import (
     Qt, QDate, QSize, QPoint, QRect, QTimer, QEvent,
@@ -32,6 +32,7 @@ from PyQt5.QtGui import (
 
 import database as db
 from holidays import get_holiday
+from sync.cache import shared_cache
 from ui.dialogs import GanttScheduleDialog, ActualDialog, \
     _make_editable_task_combo, resolve_task_combo
 from ui.zoom_mixin import ZoomMixin, ZoomableTableWidget
@@ -514,6 +515,14 @@ class GanttTab(QWidget, ZoomMixin):
         refresh_btn.clicked.connect(self.refresh)
         cl.addWidget(refresh_btn)
 
+        self.team_chk = QCheckBox("👥 チーム表示")
+        self.team_chk.setToolTip(
+            "共有フォルダ内の他ユーザーのDBの予定・実績も表示します（読み取り専用）"
+        )
+        self.team_chk.setChecked(db.get_setting('gantt_show_team', '1') != '0')
+        self.team_chk.toggled.connect(self._on_team_toggled)
+        cl.addWidget(self.team_chk)
+
         self._make_zoom_controls(cl)
         cl.addStretch()
         layout.addLayout(cl)
@@ -705,6 +714,8 @@ class GanttTab(QWidget, ZoomMixin):
                 cur = self.table.currentIndex()
                 if cur.isValid() and cur.column() >= 0:
                     data = self._cell_data(cur.row(), cur.column())
+                    if self._row_readonly(cur.row()):
+                        return True
                     if data and data.get('type') == 'date_cell':
                         self._delegate._pending_key = event.text()
                         self._open_actual_inline(cur.row(), cur.column())
@@ -757,7 +768,7 @@ class GanttTab(QWidget, ZoomMixin):
         if t == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
             row = self.table.rowAt(event.pos().y())
             col = self.table.columnAt(event.pos().x())
-            if row >= 0 and col >= 0:
+            if row >= 0 and col >= 0 and not self._row_readonly(row):
                 # 日付列 → 予定スパンドラッグ
                 self._drag_start_pos = event.pos()
                 self._drag_row       = row
@@ -846,6 +857,8 @@ class GanttTab(QWidget, ZoomMixin):
             row = self.table.rowAt(event.pos().y())
             col = self.table.columnAt(event.pos().x())
             if row >= 0 and col >= 0:
+                if self._row_readonly(row):
+                    return True
                 data = self._cell_data(row, col)
                 if data and data.get('type') == 'date_cell':
                     cell_top = self.table.rowViewportPosition(row)
@@ -898,7 +911,7 @@ class GanttTab(QWidget, ZoomMixin):
     def _reorder_row(self, src: int, insert_before: int):
         """_row_order の src 番目の行を insert_before 番目の前に移動する。"""
         n = len(self._row_order)
-        if not (0 <= src < n):
+        if not (0 <= src < n) or self._row_readonly(src):
             return
         insert_before = max(0, min(n, insert_before))
         if insert_before in (src, src + 1):
@@ -926,6 +939,8 @@ class GanttTab(QWidget, ZoomMixin):
 
     def _open_actual_inline(self, row: int, col: int):
         """指定セルのインラインエディタを開く（実績時間の直接入力）"""
+        if self._row_readonly(row):
+            return
         idx = self.table.model().index(row, col)
         self.table.setCurrentIndex(idx)
         self.table.setEditTriggers(QAbstractItemView.AllEditTriggers)
@@ -1005,6 +1020,58 @@ class GanttTab(QWidget, ZoomMixin):
         self._reload_worker_filter()
         self._build_table()
 
+    # ── チーム表示（共有フォルダ内の他ユーザーDB）────────────────────────────
+
+    def _on_team_toggled(self, checked: bool):
+        db.set_setting('gantt_show_team', '1' if checked else '0')
+        self.refresh()
+
+    def _team_enabled(self) -> bool:
+        return self.team_chk.isChecked() and db.get_shared_folder() is not None
+
+    @staticmethod
+    def _own_source():
+        """共有キャッシュ上の自分のDB名（stem）。自DBが共有フォルダ外なら None。"""
+        return db.DB_PATH.stem if db.is_db_in_shared_folder() else None
+
+    def _team_masters(self):
+        """他ユーザーの担当者・作業を、自DBのIDと衝突しない文字列キー（"前田:1"）で返す。"""
+        own = self._own_source()
+        workers = [{**w, 'id': w['_uid'], '_readonly': True}
+                   for w in shared_cache.get_all_workers() if w['_source'] != own]
+        tasks   = [{**t, 'id': t['_uid'], '_readonly': True}
+                   for t in shared_cache.get_all_tasks() if t['_source'] != own]
+        workers.sort(key=lambda w: (w['_source'], w['name']))
+        return workers, tasks
+
+    def _team_data(self, d_from: str, d_to: str, wf):
+        """他ユーザーの予定・実績を期間で絞り、ID を _team_masters と同じキーに付け替える。"""
+        own = self._own_source()
+
+        def remap(r: dict) -> dict:
+            src = r['_source']
+            return {**r, 'worker_id': f"{src}:{r['worker_id']}",
+                    'task_id': f"{src}:{r['task_id']}", '_readonly': True}
+
+        scheds  = [remap(s) for s in shared_cache.get_all_schedules()
+                   if s['_source'] != own and d_from <= s['scheduled_date'] <= d_to]
+        actuals = [remap(a) for a in shared_cache.get_all_actuals()
+                   if a['_source'] != own and d_from <= a['actual_date'] <= d_to]
+        if wf is not None:
+            scheds  = [s for s in scheds if s['worker_id'] == wf]
+            actuals = [a for a in actuals if a['worker_id'] == wf]
+        return scheds, actuals
+
+    def _row_readonly(self, row: int) -> bool:
+        """他ユーザーの行（チーム表示・読み取り専用）なら True。"""
+        return 0 <= row < len(self._rows) and bool(self._rows[row]['worker'].get('_readonly'))
+
+    def _show_readonly_menu(self, view, pos: QPoint, row: int):
+        menu = QMenu(self)
+        src = self._rows[row]['worker'].get('_source', '')
+        menu.addAction(f"{src} のデータです（読み取り専用）").setEnabled(False)
+        menu.exec_(view.viewport().mapToGlobal(pos))
+
     # ── テーブル構築 ──────────────────────────────────────────────────────────
 
     def _reload_worker_filter(self):
@@ -1013,6 +1080,9 @@ class GanttTab(QWidget, ZoomMixin):
         self.worker_filter.addItem("全員", None)
         for w in db.get_all_workers():
             self.worker_filter.addItem(w["name"], w["id"])
+        if self._team_enabled():
+            for w in self._team_masters()[0]:
+                self.worker_filter.addItem(f"{w['name']}（{w['_source']}）", w["id"])
         if current is not None:
             for i in range(self.worker_filter.count()):
                 if self.worker_filter.itemData(i) == current:
@@ -1053,10 +1123,21 @@ class GanttTab(QWidget, ZoomMixin):
                            and (wf is None or s['worker_id'] == wf)]
             actual_list = []   # スナップショットモードでは実績を表示しない
         else:
-            sched_list  = db.get_schedules(worker_id=wf, date_from=d_from, date_to=d_to)
-            actual_list = db.get_actuals(worker_id=wf, date_from=d_from, date_to=d_to)
+            if isinstance(wf, str):   # 他ユーザーの担当者を選択中 → 自DB分は表示しない
+                sched_list, actual_list = [], []
+            else:
+                sched_list  = db.get_schedules(worker_id=wf, date_from=d_from, date_to=d_to)
+                actual_list = db.get_actuals(worker_id=wf, date_from=d_from, date_to=d_to)
             all_workers = db.get_all_workers()
             all_tasks   = db.get_all_tasks()
+            # チーム表示：共有フォルダ内の他ユーザーDB（読み取り専用）をマージ
+            if self._team_enabled():
+                team_workers, team_tasks = self._team_masters()
+                team_scheds, team_actuals = self._team_data(d_from, d_to, wf)
+                all_workers = all_workers + team_workers
+                all_tasks   = all_tasks + team_tasks
+                sched_list  = sched_list + team_scheds
+                actual_list = actual_list + team_actuals
             if wf:
                 all_workers = [w for w in all_workers if w['id'] == wf]
 
@@ -1068,10 +1149,11 @@ class GanttTab(QWidget, ZoomMixin):
 
         # 表示行の (worker_id, task_id) ペアを収集（予定・実績どちらからも）
         pairs = set()
+        team_pairs = set()   # 他ユーザー分は保存対象の _row_order に入れない
         for s in sched_list:
-            pairs.add((s['worker_id'], s['task_id']))
+            (team_pairs if s.get('_readonly') else pairs).add((s['worker_id'], s['task_id']))
         for a in actual_list:
-            pairs.add((a['worker_id'], a['task_id']))
+            (team_pairs if a.get('_readonly') else pairs).add((a['worker_id'], a['task_id']))
         pairs |= self._pinned_pairs
         # _row_order に登録済みのペアは期間外でも常に表示する
         pairs |= set(self._row_order)
@@ -1082,7 +1164,9 @@ class GanttTab(QWidget, ZoomMixin):
         t_map = {t['id']: t for t in all_tasks}
 
         # 既存の表示順を維持し、新規ペアを末尾（担当者名→作業名順）に追加
-        existing = [(w, t) for w, t in self._row_order if (w, t) in pairs]
+        # 担当者で絞り込み中に非表示の行を _row_order から消さない（行順・ピン留めの消失防止）
+        existing = [(w, t) for w, t in self._row_order
+                    if (w, t) in pairs or (wf and w != wf)]
         existing_set = set(existing)
         new_pairs = sorted(
             [p for p in pairs if p not in existing_set],
@@ -1091,9 +1175,15 @@ class GanttTab(QWidget, ZoomMixin):
         )
         self._row_order = existing + new_pairs
 
+        team_order = sorted(
+            [p for p in team_pairs if p[0] in w_map and p[1] in t_map],
+            key=lambda x: (w_map[x[0]]['_source'], w_map[x[0]]['name'],
+                           t_map[x[1]]['title']),
+        )
+
         self._rows = [
             {'worker': w_map[wid], 'task': t_map[tid]}
-            for wid, tid in self._row_order
+            for wid, tid in self._row_order + team_order
             if wid in w_map and tid in t_map
         ]
 
@@ -1189,10 +1279,16 @@ class GanttTab(QWidget, ZoomMixin):
             start = idxs[0]
             if len(idxs) > 1:
                 self.fixed_table.setSpan(start, 0, len(idxs), 1)
-            it = QTableWidgetItem(self._rows[start]['worker']['name'])
+            _w = self._rows[start]['worker']
+            if _w.get('_readonly'):
+                it = QTableWidgetItem(f"{_w['name']}\n[参照:{_w['_source']}]")
+                it.setBackground(QColor('#FFE0B2'))
+                it.setToolTip(f"{_w['_source']}.db のデータ（参照・読み取り専用）")
+            else:
+                it = QTableWidgetItem(_w['name'])
+                it.setBackground(QColor('#E3F2FD'))
             it.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
             it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-            it.setBackground(QColor('#E3F2FD'))
             f = it.font(); f.setBold(True); it.setFont(f)
             self.fixed_table.setItem(start, 0, it)
 
@@ -1222,7 +1318,10 @@ class GanttTab(QWidget, ZoomMixin):
             worker = row['worker']
             task   = row['task']
 
-            row_bg = QColor('#E8F4FD') if r % 2 == 1 else QColor('#FFFFFF')
+            if worker.get('_readonly'):
+                row_bg = QColor('#FDEFD9') if r % 2 == 1 else QColor('#FFF8EC')
+            else:
+                row_bg = QColor('#E8F4FD') if r % 2 == 1 else QColor('#FFFFFF')
 
             # ── 土日祝日ギャップ検出（連続期間内の非稼働日を薄く表示）──────────
             row_scheds_sorted = sorted(
@@ -1465,7 +1564,7 @@ class GanttTab(QWidget, ZoomMixin):
     def _on_row_resized(self, idx: int, old: int, new: int):
         if self._building_table:
             return
-        if idx < len(self._rows):
+        if idx < len(self._rows) and not self._row_readonly(idx):
             pair = (self._rows[idx]['worker']['id'], self._rows[idx]['task']['id'])
             self._row_heights_by_pair[pair] = new
         self.fixed_table.setRowHeight(idx, new)
@@ -1591,7 +1690,7 @@ class GanttTab(QWidget, ZoomMixin):
     # ── ドラッグ → 複数日ダイアログ ──────────────────────────────────────────
 
     def _open_range_dialog(self, row: int, c0: int, c1: int):
-        if row >= len(self._rows):
+        if row >= len(self._rows) or self._row_readonly(row):
             return
         if not db.get_all_workers() or not db.get_all_tasks():
             QMessageBox.warning(self, "マスタ未登録",
@@ -1752,6 +1851,9 @@ class GanttTab(QWidget, ZoomMixin):
         row = self.fixed_table.rowAt(pos.y())
         if row < 0 or row >= len(self._rows):
             return
+        if self._row_readonly(row):
+            self._show_readonly_menu(self.fixed_table, pos, row)
+            return
         r_data = self._rows[row]
         task   = r_data['task']
         colors = db.get_task_text_colors()
@@ -1794,6 +1896,9 @@ class GanttTab(QWidget, ZoomMixin):
 
         row = it.row()
         col = it.column()
+        if self._row_readonly(row):
+            self._show_readonly_menu(self.table, pos, row)
+            return
 
         # ── 日付列 ────────────────────────────────────────────────────────────
         data = self._cell_data(row, col)
